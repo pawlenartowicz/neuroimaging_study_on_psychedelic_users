@@ -264,10 +264,10 @@ def format_parameter_row(param_name, estimate, std_err, t_value, p_value=None,
     # Clean parameter name
     clean_param_name = clean_parameter_name(param_name)
     
-    # Format values
-    estimate_fmt = f"{estimate:.{digits}f}"
-    std_err_fmt = f"{std_err:.{digits}f}"
-    t_value_fmt = f"{t_value:.{digits}f}"
+    # Format values with None checks
+    estimate_fmt = f"{estimate:.{digits}f}" if estimate is not None else "N/A"
+    std_err_fmt = f"{std_err:.{digits}f}" if std_err is not None else "N/A"
+    t_value_fmt = f"{t_value:.{digits}f}" if t_value is not None else "N/A"
     
     # Start with basic info
     param_line = f"{clean_param_name:<20} {estimate_fmt:<10} {std_err_fmt:<10} {t_value_fmt:<10}"

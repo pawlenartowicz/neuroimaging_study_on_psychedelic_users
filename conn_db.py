@@ -31,65 +31,6 @@ class Study:
         self.control_group_name = control_group_name  # Store the control group name
         self.samples = {}  # New dictionary to store sample information
     
-    def summary(self):
-        """
-        Print a summary of the measurement conditions in the study.
-        Shows all condition keys and their possible values across all measurements.
-        Nodes are grouped by their labels and displayed in a hierarchical format.
-        """
-        if not self.data:
-            print("No data loaded in this study.")
-            return
-        
-        print(f"Study summary: {len(self.data)} measurements loaded")
-        
-        # Group and display nodes by labels
-        if self.node_labels:
-            # Create a dictionary to group nodes by label
-            nodes_by_label = {}
-            for node, label in self.node_labels.items():
-                if node in self.node_list:  # Only include nodes that are in node_list
-                    if label not in nodes_by_label:
-                        nodes_by_label[label] = []
-                    nodes_by_label[label].append(node)
-            
-            # Print nodes grouped by labels
-            print("\nNodes by label:")
-            for label, nodes in sorted(nodes_by_label.items()):
-                print(f"{label}:")
-                print(f"       {', '.join(sorted(nodes))}")
-        else:
-            # If no labels, just print the sorted node list
-            print(f"\nNodes: {', '.join(sorted(self.node_list))}")
-        
-        # Collect all condition keys and their possible values
-        conditions_summary = {}
-        
-        for name, measurement in self.data.items():
-            if "measurement_conditions" in measurement and measurement["measurement_conditions"]:
-                for key, value in measurement["measurement_conditions"].items():
-                    if key not in conditions_summary:
-                        conditions_summary[key] = set()
-                    conditions_summary[key].add(value)
-        
-        # Print condition keys and their possible values
-        if conditions_summary:
-            print("\nMeasurement conditions:")
-            for key, values in sorted(conditions_summary.items()):
-                print(f"  {key}: {', '.join(sorted(values))}")
-        else:
-            print("\nNo measurement conditions found.")
-        
-        # Print sample information
-        if self.samples:
-            print("\nSamples:")
-            for sample_id, sample_df in self.samples.items():
-                # Count unique subjects in each sample
-                unique_subjects = sample_df['ID'].nunique()
-                print(f"  Sample ID: {sample_id}, Subjects: {unique_subjects}")
-        else:
-            print("\nNo sample information available.")
-
     def _generate_sample_id(self, measurement_conditions, independent_samples):
         """
         Generate a sample ID based on the independent sample conditions.
@@ -377,10 +318,11 @@ class Study:
         
         return spec_df, results_df
     
+    # Modify the permute method to calculate mean and median contrasts
     def permute(self, n_permutations=1000, column="group", seed=None):
         if seed is not None:
             np.random.seed(seed)
-            
+                
         # Filter valid measurements
         valid_measurements = {k: v for k, v in self.data.items()
                             if "between_group_contrast" in v and v["between_group_contrast"] is not None
@@ -429,6 +371,10 @@ class Study:
         
         # Main permutation loop
         permuted_results = []
+        # Lists to store mean and median for each permutation
+        perm_means = []
+        perm_medians = []
+        
         for _ in tqdm(range(n_permutations), desc="Processing permutations"):
             # Generate permutations for each sample
             sample_permutations = {}
@@ -458,13 +404,585 @@ class Study:
                     permuted_values[good_indices],
                     self.control_group_name
                 )
-                
+            
+            # Calculate mean and median for this permutation if we have values
+            if perm_result:
+                contrast_values = list(perm_result.values())
+                perm_means.append(np.mean(contrast_values))
+                perm_medians.append(np.median(contrast_values))
+            
             permuted_results.append(perm_result)
         
         self.permuted_results = permuted_results
+        self.perm_means = perm_means
+        self.perm_medians = perm_medians
+        
+        # Calculate original mean and median contrasts
+        original_contrasts = [v.get("between_group_contrast") for v in valid_measurements.values() 
+                            if v.get("between_group_contrast") is not None]
+        
+        if original_contrasts:
+            self.original_mean_contrast = np.mean(original_contrasts)
+            self.original_median_contrast = np.median(original_contrasts)
+        else:
+            self.original_mean_contrast = None
+            self.original_median_contrast = None
+        
         return permuted_results
 
-    
+    # Modify the regression method to include mean/median contrast stats
+    def regression(self, formula, target_nodes=None, add_network_categories=False,
+                filter=None, calculate_permutation_stats=True, n_permutations=1000, 
+                seed=None, confidence_level=0.95, column="group"):
+        """
+        Performs regression analysis on specification data with optional permutation-based inference.
+        
+        Parameters:
+            formula (str): R-style formula for regression (e.g., "~ waves + waves:eyes")
+            target_nodes (tuple, optional): Specific node pair to analyze. If None, analyzes all node pairs.
+            add_network_categories (bool): Whether to add network relationship categories.
+            filter (tuple, optional): A tuple of ("include", dict) or ("exclude", dict) to filter data.
+            calculate_permutation_stats (bool): Whether to derive p-values from permutation tests (default: True).
+            n_permutations (int): Number of permutations to run if permutation stats are requested.
+                If existing permutation data has fewer permutations, additional permutations will be generated.
+            seed (int, optional): Random seed for permutation.
+            confidence_level (float): Confidence level for intervals (default: 0.95).
+            column (str): Column to use for permutation tests, default is "group"
+        
+        Returns:
+            pd.DataFrame, pd.DataFrame, pd.DataFrame: Three DataFrames containing model summary, parameter estimates, and contrast statistics
+        """
+        # Get specification data
+        spec_df, results_df = self.specification_data(
+            target_nodes=target_nodes,
+            add_network_categories=add_network_categories,
+            filter=filter
+        )
+        
+        if len(spec_df) == 0 or len(results_df) == 0:
+            print("No data available for regression analysis.")
+            return None, None, None
+        
+        # Merge the dataframes
+        combined_df = pd.concat([spec_df, results_df], axis=1)
+        combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
+        
+        # Ensure the formula starts with the dependent variable
+        if not formula.startswith("contrast"):
+            if formula.startswith("~"):
+                formula = "contrast " + formula
+            else:
+                formula = "contrast ~ " + formula
+        
+        # Fit the model
+        try:
+            model = smf.ols(formula=formula, data=combined_df)
+            result = model.fit()
+        except Exception as e:
+            print(f"Error fitting regression model: {str(e)}")
+            return None, None, None
+        
+        # Create summary DataFrame
+        model_summary = pd.DataFrame({
+            'Statistic': ['Formula', 'Observations', 'R-squared', 'Adj. R-squared', 'F-statistic'],
+            'Value': [formula, result.nobs, result.rsquared, result.rsquared_adj, result.fvalue]
+        })
+        
+        # Create parameter estimates DataFrame
+        param_estimates = pd.DataFrame({
+            'Parameter': result.params.index,
+            'Estimate': result.params.values,
+            'Std. Error': result.bse.values,
+            't-value': result.tvalues.values
+        })
+        
+        # Initialize contrast stats DataFrame
+        contrast_stats = pd.DataFrame({
+            'Statistic': ['Mean Contrast', 'Median Contrast'],
+            'Value': [np.mean(results_df['contrast']), np.median(results_df['contrast'])]
+        })
+        
+        # If permutation-based inference is requested
+        if calculate_permutation_stats:
+            # Check if we need to run or update permutations
+            need_new_permutations = False
+            
+            # Case 1: No permutation results exist
+            if not hasattr(self, "permuted_results") or self.permuted_results is None:
+                need_new_permutations = True
+            # Case 2: Existing permutations are fewer than requested
+            elif len(self.permuted_results) < n_permutations:
+                print(f"Found {len(self.permuted_results)} existing permutations, but {n_permutations} requested.")
+                print(f"Running additional {n_permutations - len(self.permuted_results)} permutations...")
+                need_new_permutations = True
+            
+            # Run new permutations if needed
+            if need_new_permutations:
+                if hasattr(self, "permuted_results") and self.permuted_results and len(self.permuted_results) < n_permutations:
+                    # Calculate how many more permutations we need
+                    additional_permutations = n_permutations - len(self.permuted_results)
+                    
+                    # Run additional permutations and combine with existing ones
+                    print(f"Running {additional_permutations} additional permutations...")
+                    new_permutations = self.permute(n_permutations=additional_permutations, seed=seed, column=column)
+                    
+                    # Combine existing and new permutations
+                    self.permuted_results.extend(new_permutations)
+                    
+                    # Ensure we only keep the requested number of permutations
+                    if len(self.permuted_results) > n_permutations:
+                        self.permuted_results = self.permuted_results[:n_permutations]
+                else:
+                    # No permutations or need to start from scratch
+                    print(f"Running permutation test with {n_permutations} permutations...")
+                    self.permute(n_permutations=n_permutations, seed=seed, column=column)
+            
+            # Calculate permutation-based statistics if we have permutation results
+            if hasattr(self, "permuted_results") and self.permuted_results:
+                print("Calculating permutation-based statistics...")
+                
+                # Limit the number of permutations to the requested number
+                used_permutations = self.permuted_results[:n_permutations]
+                
+                # Collect permutation model results
+                perm_f_values = []
+                perm_t_values = {param: [] for param in result.params.index}
+                perm_params = {param: [] for param in result.params.index}  # Store parameter estimates too
+                
+                # Convert permutation results to DataFrame format for regression
+                for perm_result in used_permutations:
+                    # Extract permuted contrasts in the same order
+                    perm_contrasts = []
+                    for name in results_df["name"]:
+                        if name in perm_result:
+                            perm_contrasts.append(perm_result[name])
+                        else:
+                            # Skip this permutation if data is missing
+                            break
+                    
+                    # Skip if some data was missing
+                    if len(perm_contrasts) != len(results_df):
+                        continue
+                    
+                    # Create permuted dataframe
+                    perm_results_df = results_df.copy()
+                    perm_results_df["contrast"] = perm_contrasts
+                    
+                    # Merge with specification data
+                    perm_combined_df = pd.concat([spec_df, perm_results_df], axis=1)
+                    perm_combined_df = perm_combined_df.loc[:, ~perm_combined_df.columns.duplicated()]
+                    
+                    # Fit the model on permuted data
+                    try:
+                        perm_model = smf.ols(formula=formula, data=perm_combined_df)
+                        perm_result_obj = perm_model.fit()
+                        
+                        # Store F-statistic
+                        perm_f_values.append(perm_result_obj.fvalue)
+                        
+                        # Store parameter estimates and t-values for each parameter
+                        for param in perm_t_values:
+                            if param in perm_result_obj.tvalues:
+                                perm_t_values[param].append(perm_result_obj.tvalues[param])
+                                perm_params[param].append(perm_result_obj.params[param])
+                    except Exception:
+                        # Skip this permutation if regression fails
+                        continue
+                
+                # Store the permutation data for use in print_apa_format
+                self._last_regression_perm_data = {
+                    "perm_f_values": perm_f_values,
+                    "perm_t_values": perm_t_values,
+                    "perm_params": perm_params
+                }
+                
+                # Calculate permutation-based p-values
+                if perm_f_values:
+                    # F-statistic p-value
+                    perm_f_pvalue = sum(f >= result.fvalue for f in perm_f_values) / len(perm_f_values)
+                    
+                    # Add F p-value to model summary
+                    f_pvalue_df = pd.DataFrame({
+                        'Statistic': ['F p-value (perm)', 'Permutations used'], 
+                        'Value': [perm_f_pvalue, len(perm_f_values)]
+                    })
+                    model_summary = pd.concat([model_summary, f_pvalue_df], ignore_index=True)
+                    
+                    # Parameter t-values p-values
+                    p_values = []
+                    
+                    for param in result.params.index:
+                        if param in perm_t_values and perm_t_values[param]:
+                            # Two-tailed test: count permutation t-values more extreme than observed
+                            t_value = result.tvalues[param]
+                            perm_t_pvalue = sum(abs(t) >= abs(t_value) for t in perm_t_values[param]) / len(perm_t_values[param])
+                            p_values.append(perm_t_pvalue)
+                        else:
+                            p_values.append(np.nan)
+                    
+                    # Add p-values to parameter table
+                    param_estimates['p-value (perm)'] = p_values
+                    
+                    # Add note about which column was permuted
+                    note_df = pd.DataFrame({
+                        'Statistic': ['Permuted column'], 
+                        'Value': [column]
+                    })
+                    model_summary = pd.concat([model_summary, note_df], ignore_index=True)
+                    
+                else:
+                    print("Warning: No valid permutation results for statistical inference.")
+                    
+                    # Add note
+                    note_df = pd.DataFrame({
+                        'Statistic': ['Note'], 
+                        'Value': ["Permutation test yielded insufficient valid results"]
+                    })
+                    model_summary = pd.concat([model_summary, note_df], ignore_index=True)
+                
+                # Add mean and median contrast statistics with confidence intervals
+                if hasattr(self, "perm_means") and self.perm_means and hasattr(self, "perm_medians") and self.perm_medians:
+                    # Calculate 95% confidence intervals for mean and median
+                    alpha = 1 - confidence_level
+                    perm_means_sorted = sorted(self.perm_means)
+                    perm_medians_sorted = sorted(self.perm_medians)
+                    
+                    lower_idx = int(alpha/2 * len(perm_means_sorted))
+                    upper_idx = int((1 - alpha/2) * len(perm_means_sorted))
+                    
+                    mean_ci_lower = perm_means_sorted[max(0, lower_idx)]
+                    mean_ci_upper = perm_means_sorted[min(len(perm_means_sorted)-1, upper_idx)]
+                    
+                    median_ci_lower = perm_medians_sorted[max(0, lower_idx)]
+                    median_ci_upper = perm_medians_sorted[min(len(perm_medians_sorted)-1, upper_idx)]
+                    
+                    # Calculate p-values for mean and median
+                    if hasattr(self, "original_mean_contrast") and self.original_mean_contrast is not None:
+                        mean_pvalue = sum(abs(m) >= abs(self.original_mean_contrast) for m in self.perm_means) / len(self.perm_means)
+                    else:
+                        mean_pvalue = None
+                    
+                    if hasattr(self, "original_median_contrast") and self.original_median_contrast is not None:
+                        median_pvalue = sum(abs(m) >= abs(self.original_median_contrast) for m in self.perm_medians) / len(self.perm_medians)
+                    else:
+                        median_pvalue = None
+                    
+                    # Add to contrast_stats DataFrame
+                    ci_df = pd.DataFrame({
+                        'Statistic': [
+                            'Mean CI Lower', 'Mean CI Upper', 'Mean p-value',
+                            'Median CI Lower', 'Median CI Upper', 'Median p-value'
+                        ], 
+                        'Value': [
+                            mean_ci_lower, mean_ci_upper, mean_pvalue,
+                            median_ci_lower, median_ci_upper, median_pvalue
+                        ]
+                    })
+                    contrast_stats = pd.concat([contrast_stats, ci_df], ignore_index=True)
+                    
+            else:
+                print("Warning: Permutation test failed or was not run.")
+                
+                # Add note
+                note_df = pd.DataFrame({
+                    'Statistic': ['Note'], 
+                    'Value': ["Permutation test failed"]
+                })
+                model_summary = pd.concat([model_summary, note_df], ignore_index=True)
+        
+        return model_summary, param_estimates, contrast_stats
+
+    # Modify print_apa_format to include mean and median contrast information
+    def print_apa_format(self, regression_results, alpha=0.05, digits=3):
+        """
+        Formats regression results in APA style, with standard errors and confidence 
+        intervals derived from permutation distributions when available.
+        
+        Parameters:
+            regression_results (tuple): The (model_summary, param_estimates, contrast_stats) tuple returned by the regression method
+            alpha (float): Significance level for highlighting significant results (default: 0.05)
+            digits (int): Number of decimal places to display (default: 3)
+            
+        Returns:
+            str: Formatted APA style text output
+        """
+        import numpy as np
+        import re
+        from helpers_functions import clean_parameter_name, format_significance_stars
+        from helpers_functions import calculate_confidence_interval, get_model_info, format_parameter_row, get_permutation_se
+        
+        # Unpack the regression results
+        if len(regression_results) == 3:
+            model_summary, param_estimates, contrast_stats = regression_results
+        else:
+            model_summary, param_estimates = regression_results
+            contrast_stats = None
+        
+        if model_summary is None or param_estimates is None:
+            return "No valid regression results to format."
+        
+        # Get model information using helper function
+        formula = get_model_info(model_summary, 'Formula', 'Unknown')
+        r_squared = get_model_info(model_summary, 'R-squared', 0.0)
+        f_stat = get_model_info(model_summary, 'F-statistic', 0.0)
+        
+        # Check if permutation p-values are available
+        has_perm_pvalues = 'F p-value (perm)' in model_summary['Statistic'].values
+        
+        if has_perm_pvalues:
+            f_pvalue = get_model_info(model_summary, 'F p-value (perm)', None)
+            p_value_type = "permutation-based"
+            
+            # Check which column was permuted
+            if 'Permuted column' in model_summary['Statistic'].values:
+                permuted_column = get_model_info(model_summary, 'Permuted column', 'unknown')
+                p_value_type = f"permutation-based (permuted {permuted_column})"
+        else:
+            f_pvalue = None
+            p_value_type = None
+        
+        # Format the values
+        r_squared_fmt = f"{r_squared:.{digits}f}"
+        f_stat_fmt = f"{f_stat:.{digits}f}"
+        f_pvalue_fmt = f"{f_pvalue:.{digits}f}" if f_pvalue is not None else "N/A"
+        
+        # Start building the output string
+        apa_output = []
+        
+        # Add model summary section
+        apa_output.append(f"Regression Analysis Results (APA Format)")
+        apa_output.append(f"----------------------------------------")
+        apa_output.append(f"Model: {formula}")
+        apa_output.append(f"")
+        
+        # Add overall model statistics
+        apa_output.append(f"The regression model explained {r_squared_fmt} of the variance, "
+                        f"F = {f_stat_fmt}, "
+                        f"{'' if f_pvalue is None else 'p = ' + f_pvalue_fmt}")
+        
+        if p_value_type:
+            apa_output.append(f"Note: p-values are {p_value_type}")
+        
+        # Add mean and median contrast information if available
+        if contrast_stats is not None:
+            apa_output.append(f"")
+            apa_output.append(f"Contrast Statistics:")
+            
+            # Extract mean contrast and CI
+            mean_contrast = get_model_info(contrast_stats, 'Mean Contrast', None)
+            mean_ci_lower = get_model_info(contrast_stats, 'Mean CI Lower', None)
+            mean_ci_upper = get_model_info(contrast_stats, 'Mean CI Upper', None)
+            mean_pvalue = get_model_info(contrast_stats, 'Mean p-value', None)
+            
+            # Extract median contrast and CI
+            median_contrast = get_model_info(contrast_stats, 'Median Contrast', None)
+            median_ci_lower = get_model_info(contrast_stats, 'Median CI Lower', None)
+            median_ci_upper = get_model_info(contrast_stats, 'Median CI Upper', None)
+            median_pvalue = get_model_info(contrast_stats, 'Median p-value', None)
+            
+            # Format mean contrast
+            if mean_contrast is not None:
+                mean_stars = format_significance_stars(mean_pvalue) if mean_pvalue is not None else ""
+                mean_fmt = f"{mean_contrast:.{digits}f}{mean_stars}"
+                
+                if mean_ci_lower is not None and mean_ci_upper is not None:
+                    apa_output.append(f"Mean Contrast: {mean_fmt}, 95% CI [{mean_ci_lower:.{digits}f}, {mean_ci_upper:.{digits}f}]" + 
+                                    (f", p = {mean_pvalue:.{digits}f}" if mean_pvalue is not None else ""))
+                else:
+                    apa_output.append(f"Mean Contrast: {mean_fmt}")
+            
+            # Format median contrast
+            if median_contrast is not None:
+                median_stars = format_significance_stars(median_pvalue) if median_pvalue is not None else ""
+                median_fmt = f"{median_contrast:.{digits}f}{median_stars}"
+                
+                if median_ci_lower is not None and median_ci_upper is not None:
+                    apa_output.append(f"Median Contrast: {median_fmt}, 95% CI [{median_ci_lower:.{digits}f}, {median_ci_upper:.{digits}f}]" + 
+                                    (f", p = {median_pvalue:.{digits}f}" if median_pvalue is not None else ""))
+                else:
+                    apa_output.append(f"Median Contrast: {median_fmt}")
+        
+        apa_output.append(f"")
+        
+        # Add regression coefficients table header
+        apa_output.append(f"Regression Coefficients:")
+        apa_output.append(f"{'Parameter':<20} {'Estimate':<10} {'SE':<10} {'t':<10}" + 
+                        (f" {'p':<10}" if 'p-value (perm)' in param_estimates.columns else "") +
+                        (f" {'95% CI':<20}" if '95% CI Lower' in param_estimates.columns else ""))
+        apa_output.append(f"{'-'*20} {'-'*10} {'-'*10} {'-'*10}" + 
+                        (f" {'-'*10}" if 'p-value (perm)' in param_estimates.columns else "") +
+                        (f" {'-'*20}" if '95% CI Lower' in param_estimates.columns else ""))
+        
+        # Calculate permutation-based standard errors if we have the raw permutation data
+        perm_se = {}
+        if hasattr(self, "permuted_results") and self.permuted_results and has_perm_pvalues:
+            # Access the permutation data collected during regression analysis
+            if hasattr(self, "_last_regression_perm_data") and self._last_regression_perm_data:
+                perm_t_values = self._last_regression_perm_data.get("perm_t_values", {})
+                perm_params = self._last_regression_perm_data.get("perm_params", {})
+                
+                for param in param_estimates['Parameter']:
+                    se = get_permutation_se(param, param_estimates, perm_params, perm_t_values)
+                    if se is not None:
+                        perm_se[param] = se
+        
+        # Add individual parameters
+        for _, row in param_estimates.iterrows():
+            param_name = row['Parameter']
+            estimate = row['Estimate']
+            
+            # Use permutation-based SE if available
+            std_err = perm_se.get(param_name, None)
+            t_value = row['t-value']
+            
+            # Get p-value if available
+            p_value = row.get('p-value (perm)', None)
+            
+            # Calculate confidence interval
+            ci_fmt = None
+            if param_name in perm_se:
+                ci_fmt = calculate_confidence_interval(estimate, std_err, digits=digits)
+            elif '95% CI Lower' in row and '95% CI Upper' in row:
+                ci_lower = row['95% CI Lower']
+                ci_upper = row['95% CI Upper']
+                ci_fmt = f"[{ci_lower:.{digits}f}, {ci_upper:.{digits}f}]"
+            
+            # Format the parameter row using the helper function
+            param_line = format_parameter_row(
+                param_name=param_name,
+                estimate=estimate,
+                std_err=std_err,
+                t_value=t_value,
+                p_value=p_value,
+                ci_fmt=ci_fmt,
+                digits=digits
+            )
+            
+            apa_output.append(param_line)
+        
+        # Add significance code explanation if p-values are present
+        if 'p-value (perm)' in param_estimates.columns:
+            apa_output.append(f"")
+            apa_output.append(f"Significance codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1")
+        
+        # Add note about permutation basis if applicable
+        if p_value_type:
+            if perm_se:
+                apa_output.append(f"")
+                apa_output.append(f"Note: All p-values, standard errors, and confidence intervals are {p_value_type}.")
+            else:
+                apa_output.append(f"")
+                apa_output.append(f"Note: p-values are {p_value_type}.")
+        
+        # Join and return the formatted output
+        return "\n".join(apa_output)
+
+    # Modify summary method to include permutation results
+    def summary(self):
+        """
+        Print a summary of the measurement conditions in the study.
+        Shows all condition keys and their possible values across all measurements.
+        Nodes are grouped by their labels and displayed in a hierarchical format.
+        If permutations have been run, includes mean and median contrast statistics.
+        """
+        if not self.data:
+            print("No data loaded in this study.")
+            return
+        
+        print(f"Study summary: {len(self.data)} measurements loaded")
+        
+        # Group and display nodes by labels
+        if self.node_labels:
+            # Create a dictionary to group nodes by label
+            nodes_by_label = {}
+            for node, label in self.node_labels.items():
+                if node in self.node_list:  # Only include nodes that are in node_list
+                    if label not in nodes_by_label:
+                        nodes_by_label[label] = []
+                    nodes_by_label[label].append(node)
+            
+            # Print nodes grouped by labels
+            print("\nNodes by label:")
+            for label, nodes in sorted(nodes_by_label.items()):
+                print(f"{label}:")
+                print(f"       {', '.join(sorted(nodes))}")
+        else:
+            # If no labels, just print the sorted node list
+            print(f"\nNodes: {', '.join(sorted(self.node_list))}")
+        
+        # Collect all condition keys and their possible values
+        conditions_summary = {}
+        
+        for name, measurement in self.data.items():
+            if "measurement_conditions" in measurement and measurement["measurement_conditions"]:
+                for key, value in measurement["measurement_conditions"].items():
+                    if key not in conditions_summary:
+                        conditions_summary[key] = set()
+                    conditions_summary[key].add(value)
+        
+        # Print condition keys and their possible values
+        if conditions_summary:
+            print("\nMeasurement conditions:")
+            for key, values in sorted(conditions_summary.items()):
+                print(f"  {key}: {', '.join(sorted(values))}")
+        else:
+            print("\nNo measurement conditions found.")
+        
+        # Print sample information
+        if self.samples:
+            print("\nSamples:")
+            for sample_id, sample_df in self.samples.items():
+                # Count unique subjects in each sample
+                unique_subjects = sample_df['ID'].nunique()
+                print(f"  Sample ID: {sample_id}, Subjects: {unique_subjects}")
+        else:
+            print("\nNo sample information available.")
+        
+        # Print permutation statistics if available
+        if hasattr(self, "permuted_results") and self.permuted_results:
+            print("\nPermutation Statistics:")
+            
+            # Calculate and display original mean and median contrasts
+            original_contrasts = []
+            for name, measurement in self.data.items():
+                if "between_group_contrast" in measurement and measurement["between_group_contrast"] is not None:
+                    original_contrasts.append(measurement["between_group_contrast"])
+            
+            if original_contrasts:
+                mean_contrast = np.mean(original_contrasts)
+                median_contrast = np.median(original_contrasts)
+                
+                print(f"  Original Mean Contrast: {mean_contrast:.4f}")
+                print(f"  Original Median Contrast: {median_contrast:.4f}")
+            
+            # Display permutation-based statistics
+            if hasattr(self, "perm_means") and self.perm_means and hasattr(self, "perm_medians") and self.perm_medians:
+                # Calculate 95% confidence intervals
+                perm_means_sorted = sorted(self.perm_means)
+                perm_medians_sorted = sorted(self.perm_medians)
+                
+                lower_idx = int(0.025 * len(perm_means_sorted))
+                upper_idx = int(0.975 * len(perm_means_sorted))
+                
+                mean_ci_lower = perm_means_sorted[max(0, lower_idx)]
+                mean_ci_upper = perm_means_sorted[min(len(perm_means_sorted)-1, upper_idx)]
+                
+                median_ci_lower = perm_medians_sorted[max(0, lower_idx)]
+                median_ci_upper = perm_medians_sorted[min(len(perm_medians_sorted)-1, upper_idx)]
+                
+                # Calculate p-values
+                if hasattr(self, "original_mean_contrast") and self.original_mean_contrast is not None:
+                    mean_pvalue = sum(abs(m) >= abs(self.original_mean_contrast) for m in self.perm_means) / len(self.perm_means)
+                    print(f"  Mean Contrast p-value: {mean_pvalue:.4f}")
+                
+                if hasattr(self, "original_median_contrast") and self.original_median_contrast is not None:
+                    median_pvalue = sum(abs(m) >= abs(self.original_median_contrast) for m in self.perm_medians) / len(self.perm_medians)
+                    print(f"  Median Contrast p-value: {median_pvalue:.4f}")
+                
+                print(f"  Mean Contrast 95% CI: [{mean_ci_lower:.4f}, {mean_ci_upper:.4f}]")
+                print(f"  Median Contrast 95% CI: [{median_ci_lower:.4f}, {median_ci_upper:.4f}]")
+                print(f"  Number of permutations: {len(self.perm_means)}")
+
     def merge_independent_condition(self, ignore_conditions=None):
         """
         Creates a new Study object with measurements merged across the specified conditions to ignore.
@@ -680,361 +1198,6 @@ class Study:
         
         return new_study
 
-    def regression(self, formula, target_nodes=None, add_network_categories=False,
-                filter=None, calculate_permutation_stats=True, n_permutations=1000, 
-                seed=None, confidence_level=0.95, column="group"):
-        """
-        Performs regression analysis on specification data with optional permutation-based inference.
-        
-        Parameters:
-            formula (str): R-style formula for regression (e.g., "~ waves + waves:eyes")
-            target_nodes (tuple, optional): Specific node pair to analyze. If None, analyzes all node pairs.
-            add_network_categories (bool): Whether to add network relationship categories.
-            filter (tuple, optional): A tuple of ("include", dict) or ("exclude", dict) to filter data.
-            calculate_permutation_stats (bool): Whether to derive p-values from permutation tests (default: True).
-            n_permutations (int): Number of permutations to run if permutation stats are requested.
-                If existing permutation data has fewer permutations, additional permutations will be generated.
-            seed (int, optional): Random seed for permutation.
-            confidence_level (float): Confidence level for intervals (default: 0.95).
-            column (str): Column to use for permutation tests, default is "group"
-        
-        Returns:
-            pd.DataFrame, pd.DataFrame: Two DataFrames containing model summary and parameter estimates
-        """
-        # Get specification data
-        spec_df, results_df = self.specification_data(
-            target_nodes=target_nodes,
-            add_network_categories=add_network_categories,
-            filter=filter
-        )
-        
-        if len(spec_df) == 0 or len(results_df) == 0:
-            print("No data available for regression analysis.")
-            return None, None
-        
-        # Merge the dataframes
-        combined_df = pd.concat([spec_df, results_df], axis=1)
-        combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
-        
-        # Ensure the formula starts with the dependent variable
-        if not formula.startswith("contrast"):
-            if formula.startswith("~"):
-                formula = "contrast " + formula
-            else:
-                formula = "contrast ~ " + formula
-        
-        # Fit the model
-        try:
-            model = smf.ols(formula=formula, data=combined_df)
-            result = model.fit()
-        except Exception as e:
-            print(f"Error fitting regression model: {str(e)}")
-            return None, None
-        
-        # Create summary DataFrame
-        model_summary = pd.DataFrame({
-            'Statistic': ['Formula', 'Observations', 'R-squared', 'Adj. R-squared', 'F-statistic'],
-            'Value': [formula, result.nobs, result.rsquared, result.rsquared_adj, result.fvalue]
-        })
-        
-        # Create parameter estimates DataFrame
-        param_estimates = pd.DataFrame({
-            'Parameter': result.params.index,
-            'Estimate': result.params.values,
-            'Std. Error': result.bse.values,
-            't-value': result.tvalues.values
-        })
-        
-        # If permutation-based inference is requested
-        if calculate_permutation_stats:
-            # Check if we need to run or update permutations
-            need_new_permutations = False
-            
-            # Case 1: No permutation results exist
-            if not hasattr(self, "permuted_results") or self.permuted_results is None:
-                need_new_permutations = True
-            # Case 2: Existing permutations are fewer than requested
-            elif len(self.permuted_results) < n_permutations:
-                print(f"Found {len(self.permuted_results)} existing permutations, but {n_permutations} requested.")
-                print(f"Running additional {n_permutations - len(self.permuted_results)} permutations...")
-                need_new_permutations = True
-            
-            # Run new permutations if needed
-            if need_new_permutations:
-                if hasattr(self, "permuted_results") and self.permuted_results and len(self.permuted_results) < n_permutations:
-                    # Calculate how many more permutations we need
-                    additional_permutations = n_permutations - len(self.permuted_results)
-                    
-                    # Run additional permutations and combine with existing ones
-                    print(f"Running {additional_permutations} additional permutations...")
-                    new_permutations = self.permute(n_permutations=additional_permutations, seed=seed, column=column)
-                    
-                    # Combine existing and new permutations
-                    self.permuted_results.extend(new_permutations)
-                    
-                    # Ensure we only keep the requested number of permutations
-                    if len(self.permuted_results) > n_permutations:
-                        self.permuted_results = self.permuted_results[:n_permutations]
-                else:
-                    # No permutations or need to start from scratch
-                    print(f"Running permutation test with {n_permutations} permutations...")
-                    self.permute(n_permutations=n_permutations, seed=seed, column=column)
-            
-            # Calculate permutation-based statistics if we have permutation results
-            if hasattr(self, "permuted_results") and self.permuted_results:
-                print("Calculating permutation-based statistics...")
-                
-                # Limit the number of permutations to the requested number
-                used_permutations = self.permuted_results[:n_permutations]
-                
-                # Collect permutation model results
-                perm_f_values = []
-                perm_t_values = {param: [] for param in result.params.index}
-                perm_params = {param: [] for param in result.params.index}  # Store parameter estimates too
-                
-                # Convert permutation results to DataFrame format for regression
-                for perm_result in used_permutations:
-                    # Extract permuted contrasts in the same order
-                    perm_contrasts = []
-                    for name in results_df["name"]:
-                        if name in perm_result:
-                            perm_contrasts.append(perm_result[name])
-                        else:
-                            # Skip this permutation if data is missing
-                            break
-                    
-                    # Skip if some data was missing
-                    if len(perm_contrasts) != len(results_df):
-                        continue
-                    
-                    # Create permuted dataframe
-                    perm_results_df = results_df.copy()
-                    perm_results_df["contrast"] = perm_contrasts
-                    
-                    # Merge with specification data
-                    perm_combined_df = pd.concat([spec_df, perm_results_df], axis=1)
-                    perm_combined_df = perm_combined_df.loc[:, ~perm_combined_df.columns.duplicated()]
-                    
-                    # Fit the model on permuted data
-                    try:
-                        perm_model = smf.ols(formula=formula, data=perm_combined_df)
-                        perm_result_obj = perm_model.fit()
-                        
-                        # Store F-statistic
-                        perm_f_values.append(perm_result_obj.fvalue)
-                        
-                        # Store parameter estimates and t-values for each parameter
-                        for param in perm_t_values:
-                            if param in perm_result_obj.tvalues:
-                                perm_t_values[param].append(perm_result_obj.tvalues[param])
-                                perm_params[param].append(perm_result_obj.params[param])
-                    except Exception:
-                        # Skip this permutation if regression fails
-                        continue
-                
-                # Store the permutation data for use in print_apa_format
-                self._last_regression_perm_data = {
-                    "perm_f_values": perm_f_values,
-                    "perm_t_values": perm_t_values,
-                    "perm_params": perm_params
-                }
-                
-                # Calculate permutation-based p-values
-                if perm_f_values:
-                    # F-statistic p-value
-                    perm_f_pvalue = sum(f >= result.fvalue for f in perm_f_values) / len(perm_f_values)
-                    
-                    # Add F p-value to model summary
-                    f_pvalue_df = pd.DataFrame({
-                        'Statistic': ['F p-value (perm)', 'Permutations used'], 
-                        'Value': [perm_f_pvalue, len(perm_f_values)]
-                    })
-                    model_summary = pd.concat([model_summary, f_pvalue_df], ignore_index=True)
-                    
-                    # Parameter t-values p-values
-                    p_values = []
-                    
-                    for param in result.params.index:
-                        if param in perm_t_values and perm_t_values[param]:
-                            # Two-tailed test: count permutation t-values more extreme than observed
-                            t_value = result.tvalues[param]
-                            perm_t_pvalue = sum(abs(t) >= abs(t_value) for t in perm_t_values[param]) / len(perm_t_values[param])
-                            p_values.append(perm_t_pvalue)
-                        else:
-                            p_values.append(np.nan)
-                    
-                    # Add p-values to parameter table
-                    param_estimates['p-value (perm)'] = p_values
-                    
-                    # Add note about which column was permuted
-                    note_df = pd.DataFrame({
-                        'Statistic': ['Permuted column'], 
-                        'Value': [column]
-                    })
-                    model_summary = pd.concat([model_summary, note_df], ignore_index=True)
-                    
-                else:
-                    print("Warning: No valid permutation results for statistical inference.")
-                    
-                    # Add note
-                    note_df = pd.DataFrame({
-                        'Statistic': ['Note'], 
-                        'Value': ["Permutation test yielded insufficient valid results"]
-                    })
-                    model_summary = pd.concat([model_summary, note_df], ignore_index=True)
-            else:
-                print("Warning: Permutation test failed or was not run.")
-                
-                # Add note
-                note_df = pd.DataFrame({
-                    'Statistic': ['Note'], 
-                    'Value': ["Permutation test failed"]
-                })
-                model_summary = pd.concat([model_summary, note_df], ignore_index=True)
-        
-        return model_summary, param_estimates
-
-    def print_apa_format(self, regression_results, alpha=0.05, digits=3):
-        """
-        Formats regression results in APA style, with standard errors and confidence 
-        intervals derived from permutation distributions when available.
-        
-        Parameters:
-            regression_results (tuple): The (model_summary, param_estimates) tuple returned by the regression method
-            alpha (float): Significance level for highlighting significant results (default: 0.05)
-            digits (int): Number of decimal places to display (default: 3)
-            
-        Returns:
-            str: Formatted APA style text output
-        """
-        import numpy as np
-        import re
-        from helpers_functions import clean_parameter_name, format_significance_stars
-        from helpers_functions import calculate_confidence_interval, get_model_info, format_parameter_row, get_permutation_se
-        
-        # Unpack the regression results
-        model_summary, param_estimates = regression_results
-        
-        if model_summary is None or param_estimates is None:
-            return "No valid regression results to format."
-        
-        # Get model information using helper function
-        formula = get_model_info(model_summary, 'Formula', 'Unknown')
-        r_squared = get_model_info(model_summary, 'R-squared', 0.0)
-        f_stat = get_model_info(model_summary, 'F-statistic', 0.0)
-        
-        # Check if permutation p-values are available
-        has_perm_pvalues = 'F p-value (perm)' in model_summary['Statistic'].values
-        
-        if has_perm_pvalues:
-            f_pvalue = get_model_info(model_summary, 'F p-value (perm)', None)
-            p_value_type = "permutation-based"
-            
-            # Check which column was permuted
-            if 'Permuted column' in model_summary['Statistic'].values:
-                permuted_column = get_model_info(model_summary, 'Permuted column', 'unknown')
-                p_value_type = f"permutation-based (permuted {permuted_column})"
-        else:
-            f_pvalue = None
-            p_value_type = None
-        
-        # Format the values
-        r_squared_fmt = f"{r_squared:.{digits}f}"
-        f_stat_fmt = f"{f_stat:.{digits}f}"
-        f_pvalue_fmt = f"{f_pvalue:.{digits}f}" if f_pvalue is not None else "N/A"
-        
-        # Start building the output string
-        apa_output = []
-        
-        # Add model summary section
-        apa_output.append(f"Regression Analysis Results (APA Format)")
-        apa_output.append(f"----------------------------------------")
-        apa_output.append(f"Model: {formula}")
-        apa_output.append(f"")
-        
-        # Add overall model statistics
-        apa_output.append(f"The regression model explained {r_squared_fmt} of the variance, "
-                        f"F = {f_stat_fmt}, "
-                        f"{'' if f_pvalue is None else 'p = ' + f_pvalue_fmt}")
-        
-        if p_value_type:
-            apa_output.append(f"Note: p-values are {p_value_type}")
-        
-        apa_output.append(f"")
-        
-        # Add regression coefficients table header
-        apa_output.append(f"Regression Coefficients:")
-        apa_output.append(f"{'Parameter':<20} {'Estimate':<10} {'SE':<10} {'t':<10}" + 
-                        (f" {'p':<10}" if 'p-value (perm)' in param_estimates.columns else "") +
-                        (f" {'95% CI':<20}" if '95% CI Lower' in param_estimates.columns else ""))
-        apa_output.append(f"{'-'*20} {'-'*10} {'-'*10} {'-'*10}" + 
-                        (f" {'-'*10}" if 'p-value (perm)' in param_estimates.columns else "") +
-                        (f" {'-'*20}" if '95% CI Lower' in param_estimates.columns else ""))
-        
-        # Calculate permutation-based standard errors if we have the raw permutation data
-        perm_se = {}
-        if hasattr(self, "permuted_results") and self.permuted_results and has_perm_pvalues:
-            # Access the permutation data collected during regression analysis
-            if hasattr(self, "_last_regression_perm_data") and self._last_regression_perm_data:
-                perm_t_values = self._last_regression_perm_data.get("perm_t_values", {})
-                perm_params = self._last_regression_perm_data.get("perm_params", {})
-                
-                for param in param_estimates['Parameter']:
-                    se = get_permutation_se(param, param_estimates, perm_params, perm_t_values)
-                    if se is not None:
-                        perm_se[param] = se
-        
-        # Add individual parameters
-        for _, row in param_estimates.iterrows():
-            param_name = row['Parameter']
-            estimate = row['Estimate']
-            
-            # Use permutation-based SE if available
-            std_err = perm_se.get(param_name, None)
-            t_value = row['t-value']
-            
-            # Get p-value if available
-            p_value = row.get('p-value (perm)', None)
-            
-            # Calculate confidence interval
-            ci_fmt = None
-            if param_name in perm_se:
-                ci_fmt = calculate_confidence_interval(estimate, std_err, digits=digits)
-            elif '95% CI Lower' in row and '95% CI Upper' in row:
-                ci_lower = row['95% CI Lower']
-                ci_upper = row['95% CI Upper']
-                ci_fmt = f"[{ci_lower:.{digits}f}, {ci_upper:.{digits}f}]"
-            
-            # Format the parameter row using the helper function
-            param_line = format_parameter_row(
-                param_name=param_name,
-                estimate=estimate,
-                std_err=std_err,
-                t_value=t_value,
-                p_value=p_value,
-                ci_fmt=ci_fmt,
-                digits=digits
-            )
-            
-            apa_output.append(param_line)
-        
-        # Add significance code explanation if p-values are present
-        if 'p-value (perm)' in param_estimates.columns:
-            apa_output.append(f"")
-            apa_output.append(f"Significance codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1")
-        
-        # Add note about permutation basis if applicable
-        if p_value_type:
-            if perm_se:
-                apa_output.append(f"")
-                apa_output.append(f"Note: All p-values, standard errors, and confidence intervals are {p_value_type}.")
-            else:
-                apa_output.append(f"")
-                apa_output.append(f"Note: p-values are {p_value_type}.")
-        
-        # Join and return the formatted output
-        return "\n".join(apa_output)
-
     def save(self, file_path, compress=False):
         """
         Save the current Study object to a file using pickle serialization.
@@ -1060,6 +1223,8 @@ class Study:
             print(f"Study saved successfully to {file_path}")
         except Exception as e:
             print(f"Error saving Study: {str(e)}")
+
+
 
     @classmethod
     def load(cls, file_path, compressed=False):
