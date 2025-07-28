@@ -14,8 +14,6 @@ import statsmodels.formula.api as smf
 from helpers_functions import *
 from visualizations import plot_specification_curve
 
-
-
 class Study:
     def __init__(self, nodes=None, control_group_name=None):
         if nodes is None: 
@@ -29,7 +27,7 @@ class Study:
         
         self.data = {}
         self.control_group_name = control_group_name  # Store the control group name
-        self.samples = {}  # New dictionary to store sample information
+        self.samples = {}  # Store sample information
     
     def _generate_sample_id(self, measurement_conditions, independent_samples):
         """
@@ -233,8 +231,8 @@ class Study:
             if can_add_networks:
                 source_node, target_node = node_pair
                 if source_node in self.node_labels and target_node in self.node_labels:
-                    source_network = self.node_labels[source_node]
-                    target_network = self.node_labels[target_node]
+                    source_network = self.node_labels[source_node] # type: ignore
+                    target_network = self.node_labels[target_node] # type: ignore
                     spec_dict["network_relation"] = f"{source_network}→{target_network}"
             
             if item.get("measurement_conditions"):
@@ -318,7 +316,6 @@ class Study:
         
         return spec_df, results_df
     
-    # Modify the permute method to calculate mean and median contrasts
     def permute(self, n_permutations=1000, column="group", seed=None):
         if seed is not None:
             np.random.seed(seed)
@@ -430,7 +427,6 @@ class Study:
         
         return permuted_results
 
-    # Modify the regression method to include mean/median contrast stats
     def regression(self, formula, target_nodes=None, add_network_categories=False,
                 filter=None, calculate_permutation_stats=True, n_permutations=1000, 
                 seed=None, confidence_level=0.95, column="group"):
@@ -438,7 +434,7 @@ class Study:
         Performs regression analysis on specification data with optional permutation-based inference.
         
         Parameters:
-            formula (str): R-style formula for regression (e.g., "~ waves + waves:eyes")
+            formula (str): R-style formula for regression (e.g., "~ band + band:eyes")
             target_nodes (tuple, optional): Specific node pair to analyze. If None, analyzes all node pairs.
             add_network_categories (bool): Whether to add network relationship categories.
             filter (tuple, optional): A tuple of ("include", dict) or ("exclude", dict) to filter data.
@@ -692,7 +688,6 @@ class Study:
         
         return model_summary, param_estimates, contrast_stats
 
-    # Modify print_apa_format to include mean and median contrast information
     def print_apa_format(self, regression_results, alpha=0.05, digits=3):
         """
         Formats regression results in APA style, with standard errors and confidence 
@@ -877,7 +872,6 @@ class Study:
         # Join and return the formatted output
         return "\n".join(apa_output)
 
-    # Modify summary method to include permutation results
     def summary(self):
         """
         Print a summary of the measurement conditions in the study.
@@ -1198,13 +1192,12 @@ class Study:
         
         return new_study
 
-    def save(self, file_path, compress=False):
+    def save(self, file_path):
         """
         Save the current Study object to a file using pickle serialization.
         
         Parameters:
             file_path (str): Path where the Study object will be saved
-            compress (bool): Whether to use gzip compression to reduce file size (default: False)
             
         Returns:
             bool: True if save was successful, False otherwise
@@ -1213,21 +1206,15 @@ class Study:
             # Create directory if it doesn't exist
             os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
             
-            if compress:
-                with gzip.open(file_path, 'wb') as f:
-                    pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
-            else:
-                with open(file_path, 'wb') as f:
-                    pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+            with open(file_path, 'wb') as f:
+                pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
                     
             print(f"Study saved successfully to {file_path}")
         except Exception as e:
             print(f"Error saving Study: {str(e)}")
 
-
-
     @classmethod
-    def load(cls, file_path, compressed=False):
+    def load(cls, file_path):
         """
         Load a Study object from a file.
         
@@ -1239,13 +1226,8 @@ class Study:
             Study: The loaded Study object or None if loading failed
         """
         try:
-            if compressed:
-                with gzip.open(file_path, 'rb') as f:
-                    study = pickle.load(f)
-            else:
-                with open(file_path, 'rb') as f:
-                    study = pickle.load(f)
-                    
+            with open(file_path, 'rb') as f:
+                study = pickle.load(f)
             print(f"Study loaded successfully from {file_path}")
             return study
         except FileNotFoundError:

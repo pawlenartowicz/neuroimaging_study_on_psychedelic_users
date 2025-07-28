@@ -318,9 +318,6 @@ def get_permutation_se(param_name, param_estimates, perm_params, perm_t_values):
             
     return None
 
-
-
-
 def process_single_permutation(keys, valid_measurements, samples, sample_to_keys, column, control_group_name):
     """
     Process a single permutation iteration

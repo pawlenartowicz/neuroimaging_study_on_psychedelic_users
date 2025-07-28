@@ -27,7 +27,7 @@ def extract_conditions_from_path(file_path):
         eyes = "Unknown"
     
     # Extract wave type
-    wave_types = {
+    frequency_band = {
         "alpha": "alpha",
         "beta": "beta",
         "delta": "delta",
@@ -35,16 +35,16 @@ def extract_conditions_from_path(file_path):
         "theta": "theta"
     }
     
-    wave = "Unknown"
-    for wave_key, wave_value in wave_types.items():
-        if wave_key in path.name.lower():
-            wave = wave_value
+    band = "Unknown"
+    for key, value in frequency_band.items():
+        if key in path.name.lower():
+            band = value
             break
     
     return {
         "city": city,
         "eyes": eyes,
-        "waves": wave
+        "bands": band
     }
 
 node_labels = {
@@ -97,10 +97,10 @@ study.summary()
 
 
 
-study.permute(n_permutations=1000)
-study.save("study_unmerged.cdb")
+# study2 = study.merge_independent_condition(["city"])
+# study2.summary()
+# study2.permute(n_permutations=10000)
+# study2.save("study_merged_huge.cdb")
 
-study2 = study.merge_independent_condition(["city"])
-study2.summary()
-study2.permute(n_permutations=1000)
-study2.save("study_merged.cdb")
+study.permute(n_permutations=10000)
+study.save("study_unmerged_huge.cdb")
