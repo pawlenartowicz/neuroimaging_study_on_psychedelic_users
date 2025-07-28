@@ -1,3 +1,6 @@
 /show.py
 /__pycache__
 *.cdb
+*.pyo
+*.pyd
+*.pyc
