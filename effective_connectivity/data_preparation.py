@@ -1,4 +1,4 @@
-from conn_db import Study
+from statistical_model import Study
 from helpers_functions import *
 import os
 import glob

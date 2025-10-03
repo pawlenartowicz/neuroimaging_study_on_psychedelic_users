@@ -1,0 +1,233 @@
+%%% ATLANTIS PROCESSING PIPELINE  
+
+% begId = 1;   %specify beginning index
+% endId = 67;  %specify end index 
+
+%% % LOADING % ft_defaults
+% Specify main data folder where the files of interest are located
+rc.expFolder = '/mnt/iSCSI3/Exp2/psychedelics/data/WAW';
+rc.analysisName = 'waw5';
+rc.dataFormat = 'eeglab';
+rc.dataRawFolder = 'Wwa_sets';
+rc.mriRawFolder = ''; 
+%rc.iclocName = 'waw';
+%rc.mriExt = 'nii.gz'; 
+% rc.mriCoordsys = 'ras'; 
+rc.saveCompress = 20;
+
+%% % RUN CONTROL
+% 0  - raw file read and preprocessing
+% 1  - segmentation
+% 2  - artifact rejection
+% 3  - ica1. decomposition
+% 4  - ica1 artifact rejection
+% 5  - ica2. decomposition
+% 6  - IC classification 
+% 7  - realignment/headmodel/sourcemodel
+% 8  - leadfield/localization 
+% 9  - reconstruct ROI signals 
+% 10 - connectivity estimation
+% 11 - connectivity statistics
+
+rc.load = 0;  % start from stage
+rc.stop = 11;  % stop at stage  (-1 = run all)
+
+%% PREPROCESSING   %%% sc_plot(data_prep)
+
+% chan.sensMatFile = 'elec_1020.mat';
+% chan.elcFile = 'biosemi64.elc';
+chan.ref = [69,70]; %ref channels during import. AVG is further forced automatically to enable source reconstruction
+chan.meeg = [1:64]; %electric channels that should be taken into account during ICA
+chan.elec = [65:68]; %65 - VEOG, HEOG
+chan.eog = [65:68];   
+filter.HPfreq = 2; %sets up high pass frequency
+filter.HPtype = 'firws'; %sets up hp filter type
+filter.HPord   = 3300; %sets up hp filter order (3.3*fs/trans_width)
+filter.LPfreq = 47; %sets up lp frequency
+filter.LPtype  = 'firws'; %sets up lp filter type
+filter.LPord   = 1100; %sets up lp filter order
+filter.plotResp   = 'no'; %specify where you want to see filer response ('yes') or 'no'
+filter.resampleTo = 250;
+
+%% SEGMENTATION %%% sc_plot(data_segm)
+seg.studyType = 'RS'; % either 'ER' for event related; 'RS' for resting state
+seg.prestim = 0;
+seg.poststim = 300;
+seg.baseline = 0; % baseline correction (from base_line to zero)
+seg.demean = 'Y'; % recommended for ica. overrides baseline correction
+seg.rsSegm = 4;  % length of RS for dummy segmenting (required for AR) [RS only]
+
+%% ARTIFACT REJECTION %%
+  
+% preliminary channel screening 
+    ar.chIQR = 7;    % chan iqr threshold for rejection
+    ar.chRmLimit = 8; % sets max number of channels that can be removed from the DS. if exceeded, whole DS is removed
+% trial variance
+    ar.varIQR = 7;
+% range
+    ar.rangeThr = 300;
+% parameters for MUSCLE 
+    ar.muscHP = 35; % low freq window for muscle detection
+    ar.muscLP = 47; % high freq window for muscle rejection
+    ar.muscThr = 24; % muscle z-value (converted threshold) // this value should be adjusted for given m_lp and m_hp filter specification respectively
+
+%% %%%%%  DESIGN   % here specify your experiment design 
+
+design.idPosStart = 1;
+design.idPosEnd   = 3;
+
+design.grpPosStart = 1;
+design.grpPosEnd   = 1;
+
+%%###triggers S 10 - open, S 11 - close ##
+design.COND(1).name = {'RS-OPEN', 'RS-CLOSE'};
+design.COND(1).trig = { {10}, {11} };
+
+DC=1;  
+design.DC(DC).GRP = {'1'}; 
+design.DC(DC).COND = {'RS-OPEN'};
+
+DC=2;  
+design.DC(DC).GRP = {'1'}; 
+design.DC(DC).COND = {'RS-CLOSE'};
+
+DC=3;  
+design.DC(DC).GRP = {'9'}; 
+design.DC(DC).COND = {'RS-OPEN'}; 
+
+DC=4;  
+design.DC(DC).GRP = {'9'}; 
+design.DC(DC).COND = {'RS-CLOSE'}; 
+
+%% %%% SPECIFY PARAMETERS OF INTEREST %%%%%%%
+
+ica.ICA1_nonlinearity = 'pow3';  
+ica.ICA1_numIter = 3;
+ica.ICA1_maxSteps = 120;
+
+ica.ICA2_numIter = 24;
+ica.ICA2_maxSteps = 300; 
+ica.ICA2_nonlinearity = 'pow3';
+
+ica.ICA2_classModel = 'classification_models_EEG_RS_elec.mat';   % the name of the classification model. see the manual for more details. 
+
+% IC artifacts rejection using ICA.
+ar.ica_topoZThr = 6; % sensor rejection that deviate significantly based on topography
+ar.ica_singleicZthe = 20;  %trial rejection based on z-scores of individual IC
+ar.ica_multiicZThr = 7;  %trial rejection based on z-scores of multiple IC simultaneously 
+ar.ica_multiicZCnt = 6;  %trial rejection based on z-scores of multiple IC simultaneously - number of IC that exceed ar.ica_multiicZThr
+
+%% %%%  LOCALIZATION   %%%%%%
+loc.headmodelMethod = 'simbio'; 
+loc.noiseLev = 1.5; 
+loc.method = 'mne';
+loc.norm = 'cov';
+loc.recon = 'pca';
+ 
+%% %%%%%%%ROI%%%%%%%%%%% F9 - sc_roiplot
+
+%% ALL 22 ROIS
+
+ %%% TRIPLE NETWORK
+ 
+ % % % SN
+ loc.ROI(1).name =  'L-ACC'; %SN FC1
+ loc.ROI(1).pos = [-6 6 38];
+ loc.ROI(2).name =   'R-ACC'; %SN FC2
+ loc.ROI(2).pos = [3 6 41];
+ loc.ROI(3).name =   'L-INS'; %SN F5
+ loc.ROI(3).pos = [-37 17 -3];
+ loc.ROI(4).name =  'R-INS'; %SN F6
+ loc.ROI(4).pos = [37 18 -4];
+ 
+% % DMN
+loc.ROI(5).name =  'L-IFG'; %DMN %CEN F7
+loc.ROI(5).pos = [-42 47 -7];
+loc.ROI(6).name =  'R-IFG'; %DMN %CEN F8
+loc.ROI(6).pos = [48 47 -7];
+loc.ROI(7).name = 'L-mPFC'; %DMN F3
+loc.ROI(7).pos = [-4 51 -7];
+loc.ROI(8).name = 'R-mPFC'; %DMN F4
+loc.ROI(8).pos = [5 53 -7];
+loc.ROI(9).name = 'L-aSTG'; %DMN FT7
+loc.ROI(9).pos = [-59 -5 -6];
+loc.ROI(10).name =  'R-aSTG'; %DMN FT8
+loc.ROI(10).pos = [59 0 -8];
+loc.ROI(11).name =  'L-PREC'; %DMN P1
+loc.ROI(11).pos = [-9 -49 38];
+loc.ROI(12).name =  'R-PREC'; %DMN P2
+loc.ROI(12).pos = [9 -49 38];
+loc.ROI(13).name =  'L-ANG'; %DMN P3
+loc.ROI(13).pos = [-51 -64 32];
+loc.ROI(14).name =  'R-ANG'; %DMN P4
+loc.ROI(14).pos = [54 -52 26];
+
+% % %CEN
+ loc.ROI(15).name =  'L-SFG'; %CEN AF3
+ loc.ROI(15).pos = [-15 20 62];
+ loc.ROI(16).name =   'R-SFG'; %CEN AF4
+ loc.ROI(16).pos = [16 18 62];
+ loc.ROI(17).name =  'L-pSTG'; %CEN T7
+ loc.ROI(17).pos = [-66 -28 8];
+ loc.ROI(18).name =   'R-pSTG'; %CEN T8
+ loc.ROI(18).pos = [66 -30 11];
+ loc.ROI(19).name =  'L-ITG'; %CEN TP7
+ loc.ROI(19).pos = [-60 -56 -13];
+ loc.ROI(20).name =   'R-ITG'; %CEN TP8
+ loc.ROI(20).pos = [63 -54 -13];
+ loc.ROI(21).name =  'L-SUP'; %CEN CP5
+ loc.ROI(21).pos = [-62 -35 36];
+ loc.ROI(22).name =  'R-SUP'; %CEN CP6
+ loc.ROI(22).pos = [61 -40 41];
+
+%% %%%% CONNECTIVITY 
+
+%% %con.parameters
+con.mvarOrd = 7;        % model order
+con.winlen =  []; % [] to disable 
+con.winshf =  0;  % 0 to disable
+con.winnum = 1;   % 3 windows 3% sDTF no of wins
+con.useRange = false;  % cut range from trials 
+con.timeRangeStart = 0; 
+con.timeRangeEnd = 0; 
+con.lc = 1; % add leakage correction
+con.decimate = 2;  %decrease sampling freq before conn calculations 
+
+%% MVAR
+con.contrast2test = {[2,4]}; %1 - EXP Eyes Open; 2 - EXP Eyes Closed ; 3 - CON EO ; 4 - CON EC
+con.test_type = 'between'; %must be within or between
+con.subTitle = {'delta', 'theta', 'alpha', 'beta','gamma'};
+con.freqRange = {[1 3],[4 8] [9 13], [14 30], [31 50]};
+con.pThresh = {0.01};
+con.p_adjust = 'fdr';
+con.iqr = {3}; %remove extremes before start
+
+%% WHAT TO SHOW
+con.pDTF = 0;
+con.pNDTF = 0;
+con.pSpect = 0;
+con.pCohs = 0;
+con.pdDTF = 0;
+con.pPDC = 0;
+con.pffDTF = 0;
+
+% WHAT TO SAVE
+con.sDTF = 0;
+con.sNDTF = 1;
+con.sSpect = 0;
+con.sCohs = 0;
+con.sdDTF = 0;
+con.sPDC = 0;
+con.sffDTF = 0;
+con.sAR = 0;
+con.savefigs = 0;
+
+%PARAMETERS
+con.fstart = 0;      % freq window from
+con.fend = 50;       % freq window from
+     
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+tic
+sc_initAnalysis
+toc

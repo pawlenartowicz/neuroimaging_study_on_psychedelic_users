@@ -611,7 +611,7 @@ class Study:
                         if param in perm_t_values and perm_t_values[param]:
                             # Two-tailed test: count permutation t-values more extreme than observed
                             t_value = result.tvalues[param]
-                            perm_t_pvalue = sum(abs(t) >= abs(t_value) for t in perm_t_values[param]) / len(perm_t_values[param])
+                            perm_t_pvalue = (1+ sum(abs(t) >= abs(t_value) for t in perm_t_values[param])) / (1+ len(perm_t_values[param]))
                             p_values.append(perm_t_pvalue)
                         else:
                             p_values.append(np.nan)
