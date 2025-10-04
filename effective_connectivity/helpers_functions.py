@@ -28,7 +28,7 @@ def contrast_effect(ranks, groups, control_group_name=None):
         control_group_name: Name of control group (same type as groups)
     
     Returns:
-        float: Cohen's d effect size
+        float: Cohen's d effect size on ranked data
     """
     # Remove NaN values
     valid_mask = ~np.isnan(ranks)
