@@ -5,3 +5,4 @@
 *.pyd
 *.pyc
 .vscode/*
+effective_connectivity/venv/*
