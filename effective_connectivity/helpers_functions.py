@@ -386,3 +386,94 @@ def process_single_permutation(keys, valid_measurements, samples, sample_to_keys
                 )
 
     return perm_result
+
+
+def permute_worker(iteration_seed, measurement_cache, sample_lookup, control_group_name):
+    """
+    Worker function for single permutation iteration - designed for parallel execution.
+
+    This function performs one complete permutation cycle:
+    1. Sets random seed for reproducibility
+    2. Shuffles group assignments within each sample
+    3. Recalculates contrast effects for all measurements
+    4. Returns results with summary statistics
+
+    Parameters:
+        iteration_seed (int or None): Random seed for this iteration
+        measurement_cache (dict): Pre-processed measurement data
+            Keys: measurement names
+            Values: dict with 'valid_ranks', 'valid_ids', 'sample_id'
+        sample_lookup (dict): Sample ID -> {'ids': array, 'values': array}
+        control_group_name (str): Name of control group for contrast calculation
+
+    Returns:
+        tuple: (perm_result, mean_contrast, median_contrast)
+            - perm_result (dict): measurement_name -> contrast_effect
+            - mean_contrast (float): Mean of all contrasts in this permutation
+            - median_contrast (float): Median of all contrasts in this permutation
+    """
+    # Set seed for this iteration
+    if iteration_seed is not None:
+        np.random.seed(iteration_seed)
+
+    # Generate permutations for each sample
+    sample_permutations = {}
+    for sample_id, data in sample_lookup.items():
+        indices = np.random.permutation(len(data['ids']))
+        sample_permutations[sample_id] = dict(zip(data['ids'], data['values'][indices]))
+
+    # Process measurements using cached data
+    perm_result = {}
+    for key, cache in measurement_cache.items():
+        sample_id = cache['sample_id']
+        valid_ranks = cache['valid_ranks']
+        valid_ids = cache['valid_ids']
+
+        # Get permuted values for valid IDs
+        permuted_values = np.array([sample_permutations[sample_id].get(id_val, None)
+                                for id_val in valid_ids])
+
+        # Remove any None values that couldn't be mapped
+        good_indices = permuted_values != None
+        if not np.any(good_indices):
+            continue
+
+        # Calculate contrast with valid data only
+        perm_result[key] = contrast_effect(
+            valid_ranks[good_indices],
+            permuted_values[good_indices],
+            control_group_name
+        )
+
+    # Calculate mean and median for this permutation
+    if perm_result:
+        contrast_values = list(perm_result.values())
+        mean_contrast = np.mean(contrast_values)
+        median_contrast = np.median(contrast_values)
+    else:
+        mean_contrast = np.nan
+        median_contrast = np.nan
+
+    return (perm_result, mean_contrast, median_contrast)
+
+
+def permute_worker_batch(iteration_seeds, measurement_cache, sample_lookup, control_group_name):
+    """
+    BATCHED worker - processes multiple permutations to reduce serialization overhead.
+
+    This is MUCH faster for parallel execution as it amortizes the cost of
+    pickling/unpickling large data structures across many permutations.
+
+    Parameters:
+        iteration_seeds (list): List of random seeds, one per permutation in this batch
+        measurement_cache (dict): Pre-processed measurement data
+        sample_lookup (dict): Sample ID -> {'ids': array, 'values': array}
+        control_group_name (str): Name of control group
+
+    Returns:
+        list: List of (perm_result, mean_contrast, median_contrast) tuples
+    """
+    results = []
+    for seed in iteration_seeds:
+        results.append(permute_worker(seed, measurement_cache, sample_lookup, control_group_name))
+    return results
