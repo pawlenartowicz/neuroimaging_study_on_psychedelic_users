@@ -6,3 +6,4 @@
 *.pyc
 .vscode/*
 effective_connectivity/.vscode/*
+effective_connectivity/venv/*
