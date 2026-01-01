@@ -9,11 +9,95 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import statsmodels.formula.api as smf
+from patsy import dmatrices, build_design_matrices
 from joblib import Parallel, delayed
 
 # Local imports
 from helpers_functions import *
 from visualizations import plot_specification_curve
+
+
+def fast_ols(X, y):
+    """
+    Fast numpy-based OLS regression.
+
+    Parameters:
+        X: Design matrix (n x p) - should include intercept column if needed
+        y: Target vector (n,)
+
+    Returns:
+        dict with keys: params, bse, tvalues, fvalue, rsquared, rsquared_adj, nobs
+    """
+    n, p = X.shape
+
+    # Solve OLS: β = (X'X)^(-1)X'y
+    XtX = X.T @ X
+    Xty = X.T @ y
+
+    try:
+        # Use solve instead of inv for numerical stability
+        params = np.linalg.solve(XtX, Xty)
+    except np.linalg.LinAlgError:
+        # If singular, use pseudoinverse
+        params = np.linalg.lstsq(X, y, rcond=None)[0]
+
+    # Calculate residuals
+    y_pred = X @ params
+    residuals = y - y_pred
+
+    # Sum of squares
+    SSR = np.sum(residuals ** 2)  # Sum of squared residuals
+    SST = np.sum((y - np.mean(y)) ** 2)  # Total sum of squares
+
+    # R-squared
+    rsquared = 1 - (SSR / SST) if SST > 0 else 0.0
+
+    # Degrees of freedom
+    df_resid = n - p
+    df_model = p - 1  # Subtract 1 for intercept
+
+    # Adjusted R-squared
+    if df_resid > 0 and n > 1:
+        rsquared_adj = 1 - (SSR / df_resid) / (SST / (n - 1))
+    else:
+        rsquared_adj = rsquared
+
+    # Mean squared error
+    if df_resid > 0:
+        mse = SSR / df_resid
+    else:
+        mse = np.inf
+
+    # Standard errors
+    try:
+        XtX_inv = np.linalg.inv(XtX)
+        var_beta = mse * np.diag(XtX_inv)
+        bse = np.sqrt(np.maximum(var_beta, 0))  # Ensure non-negative
+    except np.linalg.LinAlgError:
+        bse = np.full(p, np.nan)
+
+    # T-values
+    tvalues = np.where(bse > 0, params / bse, np.nan)
+
+    # F-statistic
+    if df_model > 0 and df_resid > 0:
+        SSM = SST - SSR  # Model sum of squares
+        MSM = SSM / df_model
+        MSE = SSR / df_resid
+        fvalue = MSM / MSE if MSE > 0 else np.inf
+    else:
+        fvalue = np.nan
+
+    return {
+        'params': params,
+        'bse': bse,
+        'tvalues': tvalues,
+        'fvalue': fvalue,
+        'rsquared': rsquared,
+        'rsquared_adj': rsquared_adj,
+        'nobs': n
+    }
+
 
 class Study:
     def __init__(self, nodes=None, control_group_name=None):
@@ -482,11 +566,11 @@ class Study:
         return permuted_results
 
     def regression(self, formula, target_nodes=None, add_network_categories=False,
-                filter=None, calculate_permutation_stats=True, n_permutations=1000, 
-                seed=None, confidence_level=0.95, column="group"):
+                filter=None, calculate_permutation_stats=True, n_permutations=1000,
+                seed=None, confidence_level=0.95, column="group", band_order=None):
         """
         Performs regression analysis on specification data with optional permutation-based inference.
-        
+
         Parameters:
             formula (str): R-style formula for regression (e.g., "~ band + band:eyes")
             target_nodes (tuple, optional): Specific node pair to analyze. If None, analyzes all node pairs.
@@ -498,7 +582,8 @@ class Study:
             seed (int, optional): Random seed for permutation.
             confidence_level (float): Confidence level for intervals (default: 0.95).
             column (str): Column to use for permutation tests, default is "group"
-        
+            band_order (list, optional): List specifying the order of frequency bands (e.g., ["delta", "theta", "alpha", "beta", "gamma"])
+
         Returns:
             pd.DataFrame, pd.DataFrame, pd.DataFrame: Three DataFrames containing model summary, parameter estimates, and contrast statistics
         """
@@ -516,34 +601,52 @@ class Study:
         # Merge the dataframes
         combined_df = pd.concat([spec_df, results_df], axis=1)
         combined_df = combined_df.loc[:, ~combined_df.columns.duplicated()]
-        
+
+        # Enforce band order if specified
+        if band_order is not None and 'bands' in combined_df.columns:
+            combined_df['bands'] = pd.Categorical(combined_df['bands'], categories=band_order, ordered=True)
+
         # Ensure the formula starts with the dependent variable
         if not formula.startswith("contrast"):
             if formula.startswith("~"):
                 formula = "contrast " + formula
             else:
                 formula = "contrast ~ " + formula
-        
-        # Fit the model
+
+        # Fit the model using fast numpy implementation
         try:
-            model = smf.ols(formula=formula, data=combined_df)
-            result = model.fit()
+            # Use patsy to create design matrices
+            y, X = dmatrices(formula, data=combined_df, return_type='dataframe')
+            y = y.values.ravel()  # Convert to 1D array
+
+            # Get parameter names from design matrix
+            param_names = X.columns.tolist()
+
+            # Convert to numpy arrays for speed
+            X_array = X.values
+
+            # Fit using fast OLS
+            result = fast_ols(X_array, y)
+
+            # Store design info for permutation reuse
+            design_info = X.design_info
+
         except Exception as e:
             print(f"Error fitting regression model: {str(e)}")
             return None, None, None
-        
+
         # Create summary DataFrame
         model_summary = pd.DataFrame({
             'Statistic': ['Formula', 'Observations', 'R-squared', 'Adj. R-squared', 'F-statistic'],
-            'Value': [formula, result.nobs, result.rsquared, result.rsquared_adj, result.fvalue]
+            'Value': [formula, result['nobs'], result['rsquared'], result['rsquared_adj'], result['fvalue']]
         })
-        
+
         # Create parameter estimates DataFrame
         param_estimates = pd.DataFrame({
-            'Parameter': result.params.index,
-            'Estimate': result.params.values,
-            'Std. Error': result.bse.values,
-            't-value': result.tvalues.values
+            'Parameter': param_names,
+            'Estimate': result['params'],
+            'Std. Error': result['bse'],
+            't-value': result['tvalues']
         })
         
         # Initialize contrast stats DataFrame
@@ -596,8 +699,8 @@ class Study:
                 
                 # Collect permutation model results
                 perm_f_values = []
-                perm_t_values = {param: [] for param in result.params.index}
-                perm_params = {param: [] for param in result.params.index}  # Store parameter estimates too
+                perm_t_values = {param: [] for param in param_names}
+                perm_params = {param: [] for param in param_names}  # Store parameter estimates too
                 
                 # Convert permutation results to DataFrame format for regression
                 for perm_result in used_permutations:
@@ -609,32 +712,37 @@ class Study:
                         else:
                             # Skip this permutation if data is missing
                             break
-                    
+
                     # Skip if some data was missing
                     if len(perm_contrasts) != len(results_df):
                         continue
-                    
+
                     # Create permuted dataframe
                     perm_results_df = results_df.copy()
                     perm_results_df["contrast"] = perm_contrasts
-                    
+
                     # Merge with specification data
                     perm_combined_df = pd.concat([spec_df, perm_results_df], axis=1)
                     perm_combined_df = perm_combined_df.loc[:, ~perm_combined_df.columns.duplicated()]
-                    
-                    # Fit the model on permuted data
+
+                    # Fit the model on permuted data using fast numpy
                     try:
-                        perm_model = smf.ols(formula=formula, data=perm_combined_df)
-                        perm_result_obj = perm_model.fit()
-                        
+                        # Build design matrix using stored design info (MUCH faster than re-parsing)
+                        (perm_X,) = build_design_matrices([design_info], perm_combined_df, return_type='dataframe')
+                        perm_y = perm_combined_df["contrast"].values
+
+                        # Convert to numpy and fit
+                        perm_X_array = perm_X.values
+                        perm_result_obj = fast_ols(perm_X_array, perm_y)
+
                         # Store F-statistic
-                        perm_f_values.append(perm_result_obj.fvalue)
-                        
+                        perm_f_values.append(perm_result_obj['fvalue'])
+
                         # Store parameter estimates and t-values for each parameter
-                        for param in perm_t_values:
-                            if param in perm_result_obj.tvalues:
-                                perm_t_values[param].append(perm_result_obj.tvalues[param])
-                                perm_params[param].append(perm_result_obj.params[param])
+                        for i, param in enumerate(param_names):
+                            if param in perm_t_values:
+                                perm_t_values[param].append(perm_result_obj['tvalues'][i])
+                                perm_params[param].append(perm_result_obj['params'][i])
                     except Exception:
                         # Skip this permutation if regression fails
                         continue
@@ -649,7 +757,7 @@ class Study:
                 # Calculate permutation-based p-values
                 if perm_f_values:
                     # F-statistic p-value
-                    perm_f_pvalue = sum(f >= result.fvalue for f in perm_f_values) / len(perm_f_values)
+                    perm_f_pvalue = sum(f >= result['fvalue'] for f in perm_f_values) / len(perm_f_values)
                     
                     # Add F p-value to model summary
                     f_pvalue_df = pd.DataFrame({
@@ -660,11 +768,11 @@ class Study:
                     
                     # Parameter t-values p-values
                     p_values = []
-                    
-                    for param in result.params.index:
+
+                    for i, param in enumerate(param_names):
                         if param in perm_t_values and perm_t_values[param]:
                             # Two-tailed test: count permutation t-values more extreme than observed
-                            t_value = result.tvalues[param]
+                            t_value = result['tvalues'][i]
                             perm_t_pvalue = (1+ sum(abs(t) >= abs(t_value) for t in perm_t_values[param])) / (1+ len(perm_t_values[param]))
                             p_values.append(perm_t_pvalue)
                         else:
