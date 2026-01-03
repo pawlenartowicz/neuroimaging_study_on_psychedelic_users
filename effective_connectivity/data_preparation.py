@@ -99,9 +99,9 @@ study.summary()
 
 study2 = study.merge_independent_condition(["city"])
 study2.summary()
-study2.permute(n_permutations=1000)
-study2.save("study_merged_1000.cdb")
+study2.permute(n_permutations=10000)
+study2.save("study_merged_10000.cdb")
 
-study.permute(n_permutations=1000)
-study.save("study_unmerged_1000.cdb")
+study.permute(n_permutations=10000)
+study.save("study_unmerged_10000.cdb")
 
