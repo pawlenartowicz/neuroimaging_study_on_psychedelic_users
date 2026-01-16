@@ -1,0 +1,57 @@
+{
+  "title": "When the psychedelic state's over… do neurophysiological changes persist? Evidence from a population of experienced naturalistic psychedelic users",
+  "creators": [
+    {
+      "name": "Wójcik, Maja",
+      "affiliation": "",
+      "orcid": "0009-0005-3482-1119"
+    },
+    {
+      "name": "Orłowski, Paweł",
+      "affiliation": "",
+      "orcid": "0000-0003-1308-7478"
+    },
+    {
+      "name": "Adamczyk, Stanisław",
+      "affiliation": "",
+      "orcid": "0009-0009-8639-8905"
+    },
+    {
+      "name": "Lenartowicz, Paweł",
+      "affiliation": "",
+      "orcid": "0000-0002-6906-7217"
+    },
+    {
+      "name": "Hobot, Justyna",
+      "affiliation": "",
+      "orcid": "0000-0002-4464-6415"
+    },
+    {
+      "name": "Wierzchoń, Michał",
+      "affiliation": "",
+      "orcid": "0000-0002-7347-2696"
+    },
+    {
+      "name": "Bola, Michał",
+      "affiliation": "",
+      "orcid": "0000-0002-4609-8029"
+    }
+  ],
+  "description": "Research data and code for the study on neurophysiological changes in experienced naturalistic psychedelic users.",
+  "access_right": "open",
+  "license": "CC-BY-4.0",
+  "keywords": [
+    "psychedelics",
+    "neurophysiology",
+    "EEG",
+    "neuroscience"
+  ],
+  "contributors": [
+    {
+      "name": "Wójcik, Maja",
+      "type": "ContactPerson",
+      "affiliation": "",
+      "orcid": "0009-0005-3482-1119"
+    }
+  ]
+}
