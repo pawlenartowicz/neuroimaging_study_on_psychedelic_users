@@ -5,9 +5,9 @@ This repository contains data and code for the paper: *"When the psychedelic sta
 ## Authors
 
 - Maja Wójcik ([ORCID](https://orcid.org/0009-0005-3482-1119))
+- Paweł Lenartowicz ([ORCID](https://orcid.org/0000-0002-6906-7217))
 - Paweł Orłowski ([ORCID](https://orcid.org/0000-0003-1308-7478))
 - Stanisław Adamczyk ([ORCID](https://orcid.org/0009-0009-8639-8905))
-- Paweł Lenartowicz ([ORCID](https://orcid.org/0000-0002-6906-7217))
 - Justyna Hobot ([ORCID](https://orcid.org/0000-0002-4464-6415))
 - Michał Wierzchoń ([ORCID](https://orcid.org/0000-0002-7347-2696))
 - Michał Bola ([ORCID](https://orcid.org/0000-0002-4609-8029))
